@@ -1,6 +1,5 @@
-name: Compile DC-HealthKit Plugin (.a)
+name: Compile DC-HealthKit Plugin
 
-# 触发条件：手动触发 或 插件源码有改动
 on:
   workflow_dispatch:
   push:
@@ -9,26 +8,52 @@ on:
 
 jobs:
   compile:
-    name: Compile libDC-HealthKit.a (arm64)
-    runs-on: macos-14          # macOS 14 + Xcode 16，满足 App Store 要求
+    runs-on: macos-14
 
     steps:
-      # 1. 检出代码
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. 确认 Xcode 版本
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # 3. 编译 .m → .o → .a（仅 arm64 真机，App Store 提交用）
-      - name: Compile static library
+      # ── 第一步：获取真实 DCUniModule.h ──────────────────────────────
+      - name: Download HBuilderX 5.07 iOS SDK (for real DCUniModule.h)
+        run: |
+          set +e
+          URLS=(
+            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.07/iOSSDK.zip"
+            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.0.7/iOSSDK.zip"
+            "https://download.dcloud.net.cn/HBuilderX/sdk/5.0.7/iOSSDK.zip"
+          )
+          for url in "${URLS[@]}"; do
+            echo "Trying: $url"
+            curl -L --connect-timeout 20 --max-time 180 "$url" -o /tmp/iOSSDK.zip 2>/dev/null
+            if file /tmp/iOSSDK.zip 2>/dev/null | grep -qiE "zip|archive"; then
+              echo "✅ Downloaded from: $url"
+              unzip -q /tmp/iOSSDK.zip -d /tmp/iOSSDK/ 2>/dev/null
+              break
+            fi
+            echo "❌ Failed, trying next..."
+          done
+
+          HEADER=$(find /tmp/iOSSDK -name "DCUniModule.h" 2>/dev/null | head -1)
+          if [ -n "$HEADER" ]; then
+            echo "✅ Found real DCUniModule.h: $HEADER"
+            cp "$HEADER" nativeplugins/DC-HealthKit/ios/DCUniModule.h
+            echo "USING_REAL_SDK=true" >> $GITHUB_ENV
+          else
+            echo "⚠️  SDK download failed — stub header will be used"
+            echo "USING_REAL_SDK=false" >> $GITHUB_ENV
+          fi
+
+      # ── 第二步：编译 .a ──────────────────────────────────────────────
+      - name: Compile static library (arm64)
         working-directory: nativeplugins/DC-HealthKit/ios
         run: |
+          echo "Using real SDK headers: $USING_REAL_SDK"
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK path: $SDK"
 
-          # 编译目标文件
           xcrun clang \
             -target arm64-apple-ios13.0 \
             -isysroot "$SDK" \
@@ -38,20 +63,52 @@ jobs:
             -c DCHealthKitModule.m \
             -o DCHealthKitModule.o
 
-          # 打包为静态库
           xcrun libtool -static DCHealthKitModule.o -o libDC-HealthKit.a
+          rm DCHealthKitModule.o
 
-          # 验证输出
-          echo "=== lipo info ==="
+          echo "=== arch ==="
           xcrun lipo -info libDC-HealthKit.a
-          echo "=== nm symbols ==="
-          xcrun nm -g libDC-HealthKit.a | grep -i "health\|step\|auth" || true
+          echo "=== symbols ==="
+          xcrun nm -g libDC-HealthKit.a | grep " T " | head -20
 
-      # 4. 上传 artifact（保留 30 天，直接从 GitHub Actions 页面下载）
-      - name: Upload libDC-HealthKit.a
+      # ── 第三步：包装成 .framework（云打包兼容性更好）────────────────
+      - name: Package as .framework
+        working-directory: nativeplugins/DC-HealthKit/ios
+        run: |
+          FW="DC-HealthKit.framework"
+          rm -rf "$FW"
+          mkdir -p "$FW/Headers"
+
+          # 静态库内容放入 framework
+          cp libDC-HealthKit.a "$FW/DC-HealthKit"
+
+          # 复制头文件
+          cp DCHealthKitModule.h "$FW/Headers/"
+          cp DCUniModule.h "$FW/Headers/"
+
+          # Info.plist
+          cat > "$FW/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>DC-HealthKit</string>
+            <key>CFBundleIdentifier</key><string>com.dcloud.DC-HealthKit</string>
+            <key>CFBundlePackageType</key><string>FMWK</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>MinimumOSVersion</key><string>13.0</string>
+          </dict></plist>
+          PLIST
+
+          echo "✅ Framework created:"
+          ls -la "$FW/"
+
+      # ── 第四步：上传 artifact ────────────────────────────────────────
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: libDC-HealthKit-${{ github.sha }}
-          path: nativeplugins/DC-HealthKit/ios/libDC-HealthKit.a
+          name: DC-HealthKit-plugin-${{ github.sha }}
+          path: |
+            nativeplugins/DC-HealthKit/ios/DC-HealthKit.framework
+            nativeplugins/DC-HealthKit/ios/libDC-HealthKit.a
           retention-days: 30
           if-no-files-found: error

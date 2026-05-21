@@ -15,6 +15,7 @@
         }
       ],
       "frameworks": [
+        "DC-HealthKit.framework",
         "HealthKit.framework"
       ],
       "staticlibs": [
