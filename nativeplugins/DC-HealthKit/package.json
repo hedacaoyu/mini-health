@@ -1,0 +1,29 @@
+{
+  "name": "DC-HealthKit",
+  "id": "DC-HealthKit",
+  "version": "1.0.0",
+  "description": "读取 Apple HealthKit 步数",
+  "keywords": ["healthkit", "步数", "apple watch"],
+  "_dp_type": "nativeplugin",
+  "_dp_nativeplugin": {
+    "ios": {
+      "plugins": [
+        {
+          "type": "module",
+          "name": "DC-HealthKit",
+          "class": "DCHealthKitModule"
+        }
+      ],
+      "frameworks": [
+        "HealthKit.framework"
+      ],
+      "staticlibs": [
+        "libDC-HealthKit.a"
+      ],
+      "embedFrameworks": [],
+      "capabilities": {
+        "com.apple.developer.healthkit": true
+      }
+    }
+  }
+}

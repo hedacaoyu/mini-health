@@ -1,0 +1,57 @@
+name: Compile DC-HealthKit Plugin (.a)
+
+# 触发条件：手动触发 或 插件源码有改动
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'nativeplugins/DC-HealthKit/ios/**'
+
+jobs:
+  compile:
+    name: Compile libDC-HealthKit.a (arm64)
+    runs-on: macos-14          # macOS 14 + Xcode 16，满足 App Store 要求
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. 确认 Xcode 版本
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # 3. 编译 .m → .o → .a（仅 arm64 真机，App Store 提交用）
+      - name: Compile static library
+        working-directory: nativeplugins/DC-HealthKit/ios
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK path: $SDK"
+
+          # 编译目标文件
+          xcrun clang \
+            -target arm64-apple-ios13.0 \
+            -isysroot "$SDK" \
+            -fmodules \
+            -fobjc-arc \
+            -I . \
+            -c DCHealthKitModule.m \
+            -o DCHealthKitModule.o
+
+          # 打包为静态库
+          xcrun libtool -static DCHealthKitModule.o -o libDC-HealthKit.a
+
+          # 验证输出
+          echo "=== lipo info ==="
+          xcrun lipo -info libDC-HealthKit.a
+          echo "=== nm symbols ==="
+          xcrun nm -g libDC-HealthKit.a | grep -i "health\|step\|auth" || true
+
+      # 4. 上传 artifact（保留 30 天，直接从 GitHub Actions 页面下载）
+      - name: Upload libDC-HealthKit.a
+        uses: actions/upload-artifact@v4
+        with:
+          name: libDC-HealthKit-${{ github.sha }}
+          path: nativeplugins/DC-HealthKit/ios/libDC-HealthKit.a
+          retention-days: 30
+          if-no-files-found: error
