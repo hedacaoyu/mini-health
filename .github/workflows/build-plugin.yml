@@ -92,7 +92,7 @@ jobs:
           puts '✅ Xcode project generated: DCHealthKit.xcodeproj'
           RUBY
 
-      # ── 3. 编译 archive（device + simulator）─────────────────────
+      # ── 3. 编译 device archive（App Store 只需真机 arm64）────────────
       - name: Build device archive
         working-directory: nativeplugins/DC-HealthKit/ios
         run: |
@@ -104,42 +104,30 @@ jobs:
             -archivePath /tmp/DCHealthKit-iphoneos.xcarchive \
             SKIP_INSTALL=NO \
             BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            2>&1 | grep -E "error:|warning:|BUILD|archive"
+            2>&1 | grep -E "error:|warning:|BUILD SUCCEEDED|BUILD FAILED|archive"
 
-      - name: Build simulator archive
-        working-directory: nativeplugins/DC-HealthKit/ios
-        run: |
-          xcodebuild archive \
-            -project DCHealthKit.xcodeproj \
-            -scheme DCHealthKit \
-            -configuration Release \
-            -destination "generic/platform=iOS Simulator" \
-            -archivePath /tmp/DCHealthKit-iphonesimulator.xcarchive \
-            SKIP_INSTALL=NO \
-            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-            2>&1 | grep -E "error:|warning:|BUILD|archive"
-
-      # ── 4. 合并为 xcframework ─────────────────────────────────────
+      # ── 4. 从单 archive 创建 xcframework ─────────────────────────
       - name: Create xcframework
-        working-directory: nativeplugins/DC-HealthKit/ios
         run: |
           FW_DEV=$(find /tmp/DCHealthKit-iphoneos.xcarchive \
-            -name "DCHealthKit.framework" | head -1)
-          FW_SIM=$(find /tmp/DCHealthKit-iphonesimulator.xcarchive \
-            -name "DCHealthKit.framework" | head -1)
+            -name "DCHealthKit.framework" -type d | head -1)
 
-          echo "Device fw : $FW_DEV"
-          echo "Simulator fw: $FW_SIM"
+          if [ -z "$FW_DEV" ]; then
+            echo "❌ DCHealthKit.framework not found in archive"
+            find /tmp/DCHealthKit-iphoneos.xcarchive | head -30
+            exit 1
+          fi
 
-          rm -rf DC-HealthKit.xcframework
+          echo "✅ Device framework: $FW_DEV"
+
+          rm -rf nativeplugins/DC-HealthKit/ios/DC-HealthKit.xcframework
 
           xcodebuild -create-xcframework \
             -framework "$FW_DEV" \
-            -framework "$FW_SIM" \
-            -output DC-HealthKit.xcframework
+            -output nativeplugins/DC-HealthKit/ios/DC-HealthKit.xcframework
 
           echo "✅ xcframework contents:"
-          find DC-HealthKit.xcframework -type f | sort
+          find nativeplugins/DC-HealthKit/ios/DC-HealthKit.xcframework -type f | sort
 
       # ── 5. 上传 artifact ──────────────────────────────────────────
       - name: Upload DC-HealthKit.xcframework
