@@ -19,18 +19,35 @@
     </button>
 
     <text v-if="errorMsg" class="error">{{ errorMsg }}</text>
+
+    <!-- 诊断信息，排查问题后可删除 -->
+    <view class="diag-box">
+      <text class="diag-title">插件诊断</text>
+      <text class="diag-text">{{ diagInfo }}</text>
+    </view>
   </view>
 </template>
 
 <script>
 // #ifdef APP-PLUS
 let healthKit = null
+let _pluginDiag = '未检测'
 try {
   healthKit = uni.requireNativePlugin('DC-HealthKit')
-} catch (e) {}
+  if (healthKit === null || healthKit === undefined) {
+    _pluginDiag = 'requireNativePlugin 返回 null/undefined'
+  } else {
+    const keys = Object.keys(healthKit)
+    const hasAuth = typeof healthKit.requestAuth === 'function'
+    const hasSteps = typeof healthKit.getSteps === 'function'
+    _pluginDiag = `对象存在 | keys:[${keys.join(',')}] | requestAuth:${hasAuth} | getSteps:${hasSteps}`
+  }
+} catch (e) {
+  _pluginDiag = '异常: ' + String(e)
+}
 // #endif
 
-const TIMEOUT_MS = 10000 // 10 秒超时保护
+const TIMEOUT_MS = 10000
 
 export default {
   data() {
@@ -39,8 +56,14 @@ export default {
       loading: false,
       errorMsg: '',
       lastUpdated: '',
+      diagInfo: '',
       _timer: null
     }
+  },
+  mounted() {
+    // #ifdef APP-PLUS
+    this.diagInfo = _pluginDiag
+    // #endif
   },
   computed: {
     stepsDisplay() {
@@ -197,5 +220,24 @@ export default {
   font-size: 26rpx;
   color: #ff3b30;
   text-align: center;
+}
+
+.diag-box {
+  margin-top: 32rpx;
+  width: 100%;
+  background: #1c1c1e;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+}
+.diag-title {
+  font-size: 22rpx;
+  color: #8e8e93;
+  margin-bottom: 8rpx;
+  display: block;
+}
+.diag-text {
+  font-size: 22rpx;
+  color: #30d158;
+  word-break: break-all;
 }
 </style>
