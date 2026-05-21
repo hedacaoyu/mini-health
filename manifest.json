@@ -2,8 +2,8 @@
     "name" : "mini-health",
     "appid" : "__UNI__6053451",
     "description" : "Apple Watch 步数读取",
-    "versionName" : "1.4.1",
-    "versionCode" : 141,
+    "versionName" : "1.4.3",
+    "versionCode" : 143,
     "transformPx" : false,
     "app-plus" : {
         "usingComponents" : true,

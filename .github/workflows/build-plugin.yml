@@ -1,114 +1,151 @@
-name: Compile DC-HealthKit Plugin
+name: Compile DC-HealthKit xcframework
 
 on:
   workflow_dispatch:
   push:
     paths:
       - 'nativeplugins/DC-HealthKit/ios/**'
+      - '.github/workflows/build-plugin.yml'
 
 jobs:
-  compile:
+  build:
     runs-on: macos-14
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Xcode version
+      - name: Xcode version
         run: xcodebuild -version
 
-      # ── 第一步：获取真实 DCUniModule.h ──────────────────────────────
-      - name: Download HBuilderX 5.07 iOS SDK (for real DCUniModule.h)
+      # ── 1. 获取真实 DCUniModule.h ──────────────────────────────────
+      - name: Download HBuilderX 5.07 iOS SDK headers
+        working-directory: nativeplugins/DC-HealthKit/ios
         run: |
-          set +e
-          URLS=(
-            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.07/iOSSDK.zip"
-            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.0.7/iOSSDK.zip"
-            "https://download.dcloud.net.cn/HBuilderX/sdk/5.0.7/iOSSDK.zip"
-          )
-          for url in "${URLS[@]}"; do
-            echo "Trying: $url"
-            curl -L --connect-timeout 20 --max-time 180 "$url" -o /tmp/iOSSDK.zip 2>/dev/null
-            if file /tmp/iOSSDK.zip 2>/dev/null | grep -qiE "zip|archive"; then
-              echo "✅ Downloaded from: $url"
-              unzip -q /tmp/iOSSDK.zip -d /tmp/iOSSDK/ 2>/dev/null
-              break
+          FOUND=false
+          for URL in \
+            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.07/iOSSDK.zip" \
+            "https://img.cdn.aliyun.dcloud.net.cn/nativedocs/5.0.7/iOSSDK.zip"; do
+            echo "Trying: $URL"
+            if curl -fL --connect-timeout 30 --max-time 180 "$URL" -o /tmp/sdk.zip 2>/dev/null \
+               && file /tmp/sdk.zip | grep -qiE "zip|archive"; then
+              unzip -q /tmp/sdk.zip -d /tmp/sdk/
+              HEADER=$(find /tmp/sdk -name "DCUniModule.h" 2>/dev/null | head -1)
+              if [ -n "$HEADER" ]; then
+                cp "$HEADER" DCUniModule.h
+                echo "✅ Real DCUniModule.h found: $HEADER"
+                FOUND=true
+                break
+              fi
             fi
-            echo "❌ Failed, trying next..."
           done
-
-          HEADER=$(find /tmp/iOSSDK -name "DCUniModule.h" 2>/dev/null | head -1)
-          if [ -n "$HEADER" ]; then
-            echo "✅ Found real DCUniModule.h: $HEADER"
-            cp "$HEADER" nativeplugins/DC-HealthKit/ios/DCUniModule.h
-            echo "USING_REAL_SDK=true" >> $GITHUB_ENV
-          else
-            echo "⚠️  SDK download failed — stub header will be used"
-            echo "USING_REAL_SDK=false" >> $GITHUB_ENV
+          if [ "$FOUND" = "false" ]; then
+            echo "⚠️  SDK download failed — using stub (methods may not export correctly)"
           fi
 
-      # ── 第二步：编译 .a ──────────────────────────────────────────────
-      - name: Compile static library (arm64)
+      # ── 2. 用 xcodeproj gem 生成真正的 Xcode 工程 ─────────────────
+      - name: Generate Xcode project
         working-directory: nativeplugins/DC-HealthKit/ios
         run: |
-          echo "Using real SDK headers: $USING_REAL_SDK"
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          gem install xcodeproj --no-document --quiet
 
-          xcrun clang \
-            -target arm64-apple-ios13.0 \
-            -isysroot "$SDK" \
-            -fmodules \
-            -fobjc-arc \
-            -I . \
-            -c DCHealthKitModule.m \
-            -o DCHealthKitModule.o
+          ruby << 'RUBY'
+          require 'xcodeproj'
 
-          xcrun libtool -static DCHealthKitModule.o -o libDC-HealthKit.a
-          rm DCHealthKitModule.o
+          proj = Xcodeproj::Project.new('DCHealthKit.xcodeproj')
+          target = proj.new_target(:framework, 'DCHealthKit', :ios, '13.0')
 
-          echo "=== arch ==="
-          xcrun lipo -info libDC-HealthKit.a
-          echo "=== symbols ==="
-          xcrun nm -g libDC-HealthKit.a | grep " T " | head -20
+          grp = proj.main_group.new_group('Sources')
 
-      # ── 第三步：包装成 .framework（云打包兼容性更好）────────────────
-      - name: Package as .framework
+          # 源文件
+          m = grp.new_file('DCHealthKitModule.m')
+          target.source_build_phase.add_file_reference(m)
+
+          # 头文件（public）
+          ['DCHealthKitModule.h', 'DCUniModule.h'].each do |h|
+            ref = grp.new_file(h)
+            entry = target.headers_build_phase.add_file_reference(ref)
+            entry.settings = { 'ATTRIBUTES' => ['Public'] }
+          end
+
+          # 链接 HealthKit.framework
+          fmwk = proj.frameworks_group.new_file(
+            'System/Library/Frameworks/HealthKit.framework'
+          )
+          target.frameworks_build_phase.add_file_reference(fmwk)
+
+          # Build settings
+          target.build_configuration_list.build_configurations.each do |c|
+            s = c.build_settings
+            s['IPHONEOS_DEPLOYMENT_TARGET']  = '13.0'
+            s['MACH_O_TYPE']                 = 'staticlib'   # 静态 framework
+            s['DEFINES_MODULE']              = 'YES'
+            s['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'YES'
+            s['SKIP_INSTALL']                = 'NO'
+            s['CLANG_ENABLE_MODULES']        = 'YES'
+            s['CLANG_ENABLE_OBJC_ARC']       = 'YES'
+            s['HEADER_SEARCH_PATHS']         = ['$(SRCROOT)', '$(inherited)']
+            s['PRODUCT_NAME']                = 'DCHealthKit'
+          end
+
+          proj.save
+          puts '✅ Xcode project generated: DCHealthKit.xcodeproj'
+          RUBY
+
+      # ── 3. 编译 archive（device + simulator）─────────────────────
+      - name: Build device archive
         working-directory: nativeplugins/DC-HealthKit/ios
         run: |
-          FW="DC-HealthKit.framework"
-          rm -rf "$FW"
-          mkdir -p "$FW/Headers"
+          xcodebuild archive \
+            -project DCHealthKit.xcodeproj \
+            -scheme DCHealthKit \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath /tmp/DCHealthKit-iphoneos.xcarchive \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            2>&1 | grep -E "error:|warning:|BUILD|archive"
 
-          # 静态库内容放入 framework
-          cp libDC-HealthKit.a "$FW/DC-HealthKit"
+      - name: Build simulator archive
+        working-directory: nativeplugins/DC-HealthKit/ios
+        run: |
+          xcodebuild archive \
+            -project DCHealthKit.xcodeproj \
+            -scheme DCHealthKit \
+            -configuration Release \
+            -destination "generic/platform=iOS Simulator" \
+            -archivePath /tmp/DCHealthKit-iphonesimulator.xcarchive \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
+            2>&1 | grep -E "error:|warning:|BUILD|archive"
 
-          # 复制头文件
-          cp DCHealthKitModule.h "$FW/Headers/"
-          cp DCUniModule.h "$FW/Headers/"
+      # ── 4. 合并为 xcframework ─────────────────────────────────────
+      - name: Create xcframework
+        working-directory: nativeplugins/DC-HealthKit/ios
+        run: |
+          FW_DEV=$(find /tmp/DCHealthKit-iphoneos.xcarchive \
+            -name "DCHealthKit.framework" | head -1)
+          FW_SIM=$(find /tmp/DCHealthKit-iphonesimulator.xcarchive \
+            -name "DCHealthKit.framework" | head -1)
 
-          # Info.plist
-          cat > "$FW/Info.plist" << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>DC-HealthKit</string>
-            <key>CFBundleIdentifier</key><string>com.dcloud.DC-HealthKit</string>
-            <key>CFBundlePackageType</key><string>FMWK</string>
-            <key>CFBundleVersion</key><string>1.0.0</string>
-            <key>MinimumOSVersion</key><string>13.0</string>
-          </dict></plist>
-          PLIST
+          echo "Device fw : $FW_DEV"
+          echo "Simulator fw: $FW_SIM"
 
-          echo "✅ Framework created:"
-          ls -la "$FW/"
+          rm -rf DC-HealthKit.xcframework
 
-      # ── 第四步：上传 artifact ────────────────────────────────────────
-      - name: Upload artifacts
+          xcodebuild -create-xcframework \
+            -framework "$FW_DEV" \
+            -framework "$FW_SIM" \
+            -output DC-HealthKit.xcframework
+
+          echo "✅ xcframework contents:"
+          find DC-HealthKit.xcframework -type f | sort
+
+      # ── 5. 上传 artifact ──────────────────────────────────────────
+      - name: Upload DC-HealthKit.xcframework
         uses: actions/upload-artifact@v4
         with:
-          name: DC-HealthKit-plugin-${{ github.sha }}
-          path: |
-            nativeplugins/DC-HealthKit/ios/DC-HealthKit.framework
-            nativeplugins/DC-HealthKit/ios/libDC-HealthKit.a
+          name: DC-HealthKit-xcframework-${{ github.sha }}
+          path: nativeplugins/DC-HealthKit/ios/DC-HealthKit.xcframework
           retention-days: 30
           if-no-files-found: error

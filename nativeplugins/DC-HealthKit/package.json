@@ -15,13 +15,9 @@
         }
       ],
       "frameworks": [
-        "DC-HealthKit.framework",
+        "DC-HealthKit.xcframework",
         "HealthKit.framework"
       ],
-      "staticlibs": [
-        "libDC-HealthKit.a"
-      ],
-      "embedFrameworks": [],
       "capabilities": {
         "com.apple.developer.healthkit": true
       }
